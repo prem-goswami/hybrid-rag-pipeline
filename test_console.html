@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>RAG API Test Console — Week 3</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --border: #2a2e38;
+        --text: #e4e6eb;
+        --muted: #8b8f9a;
+        --accent: #4f8cff;
+        --accent-dim: #1e2a44;
+        --ok: #3ecf8e;
+        --err: #ff5c5c;
+        --mono: "SF Mono", "Consolas", "Menlo", monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          sans-serif;
+        padding: 24px;
+        max-width: 980px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 20px;
+        font-weight: 600;
+        margin: 0 0 4px;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 24px;
+      }
+      .base-row {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 24px;
+        align-items: center;
+      }
+      .base-row input {
+        flex: 1;
+      }
+      .base-row label {
+        font-size: 12px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 18px;
+        margin-bottom: 16px;
+      }
+      .panel h2 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--accent);
+        margin: 0 0 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .method {
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: var(--accent-dim);
+        color: var(--accent);
+        font-family: var(--mono);
+      }
+      .method.del {
+        background: #3a1e1e;
+        color: var(--err);
+      }
+
+      input,
+      textarea,
+      select {
+        width: 100%;
+        background: #0d0f13;
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 8px 10px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-family: var(--mono);
+        margin-bottom: 8px;
+      }
+      textarea {
+        resize: vertical;
+        min-height: 60px;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+      .row > * {
+        flex: 1;
+      }
+
+      button {
+        background: var(--accent);
+        color: #0b0d11;
+        border: none;
+        padding: 9px 16px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: opacity 0.15s;
+      }
+      button:hover {
+        opacity: 0.85;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      button.secondary {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text);
+      }
+      button.danger {
+        background: var(--err);
+        color: #1a0d0d;
+      }
+
+      .output {
+        margin-top: 10px;
+        background: #0a0c10;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px 12px;
+        font-family: var(--mono);
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 320px;
+        overflow-y: auto;
+        line-height: 1.5;
+      }
+      .status-pill {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 20px;
+        font-size: 11px;
+        font-family: var(--mono);
+        margin-left: 8px;
+      }
+      .status-pill.ok {
+        background: #0e2a20;
+        color: var(--ok);
+      }
+      .status-pill.err {
+        background: #2a1414;
+        color: var(--err);
+      }
+      .status-pill.pending {
+        background: #2a2410;
+        color: #e0c25c;
+      }
+
+      .stream-answer {
+        color: var(--text);
+      }
+      .stream-sources {
+        color: var(--muted);
+        margin-top: 8px;
+        border-top: 1px dashed var(--border);
+        padding-top: 8px;
+      }
+      .hint {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: -4px;
+        margin-bottom: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>RAG API Test Console</h1>
+    <div class="sub">
+      Week 3 capstone — manual endpoint tester, including token-level streaming
+    </div>
+
+    <div class="base-row">
+      <label>Base URL</label>
+      <input id="baseUrl" value="http://localhost:8000" />
+      <button class="secondary" onclick="checkHealth()">Health check</button>
+      <span id="healthPill"></span>
+    </div>
+
+    <!-- UPLOAD -->
+    <div class="panel">
+      <h2><span class="method">POST</span> /upload</h2>
+      <input type="file" id="uploadFile" />
+      <button onclick="doUpload()">Upload</button>
+      <div class="output" id="uploadOut">—</div>
+    </div>
+
+    <!-- STATUS -->
+    <div class="panel">
+      <h2><span class="method">GET</span> /status/{job_id}</h2>
+      <div class="row">
+        <input
+          id="jobIdInput"
+          placeholder="job_id (auto-filled after upload)"
+        />
+        <button onclick="checkStatus()">Check status</button>
+        <button class="secondary" onclick="pollStatus()">
+          Poll until complete
+        </button>
+      </div>
+      <div class="output" id="statusOut">—</div>
+    </div>
+
+    <!-- QUERY (non-streaming) -->
+    <div class="panel">
+      <h2><span class="method">POST</span> /query</h2>
+      <textarea
+        id="queryInput"
+        placeholder="Ask a question about your uploaded documents..."
+      >
+What is this document about?</textarea
+      >
+      <button onclick="doQuery()">Send query</button>
+      <div class="output" id="queryOut">—</div>
+    </div>
+
+    <!-- QUERY STREAM -->
+    <div class="panel">
+      <h2><span class="method">POST</span> /query/stream</h2>
+      <div class="hint">
+        Watch tokens appear progressively below — this is the actual streaming
+        test.
+      </div>
+      <textarea id="streamInput" placeholder="Ask a question...">
+Summarize the key points.</textarea
+      >
+      <button id="streamBtn" onclick="doStream()">Stream query</button>
+      <div class="output" id="streamOut">
+        <span class="stream-answer" id="streamAnswer"></span>
+        <div class="stream-sources" id="streamSources"></div>
+      </div>
+    </div>
+
+    <!-- DOCUMENTS -->
+    <div class="panel">
+      <h2><span class="method">GET</span> /documents</h2>
+      <button onclick="listDocs()">List documents</button>
+      <div class="output" id="docsOut">—</div>
+    </div>
+
+    <!-- DELETE -->
+    <div class="panel">
+      <h2><span class="method del">DELETE</span> /document/{document_id}</h2>
+      <div class="row">
+        <input id="deleteIdInput" placeholder="document_id / source_filename" />
+        <button class="danger" onclick="doDelete()">Delete document</button>
+      </div>
+      <div class="output" id="deleteOut">—</div>
+    </div>
+
+    <!-- COSTS -->
+    <div class="panel">
+      <h2><span class="method">GET</span> /costs</h2>
+      <button onclick="getCosts()">Get cost report</button>
+      <div class="output" id="costsOut">—</div>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const base = () => $("baseUrl").value.replace(/\/$/, "");
+      const pretty = (obj) =>
+        typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+
+      function setOut(id, content, isError = false) {
+        $(id).textContent = content;
+        $(id).style.color = isError ? "var(--err)" : "var(--text)";
+      }
+
+      async function checkHealth() {
+        const pill = $("healthPill");
+        pill.innerHTML = '<span class="status-pill pending">checking…</span>';
+        try {
+          const res = await fetch(base() + "/health");
+          const data = await res.json();
+          const ok = data.status === "healthy";
+          pill.innerHTML = `<span class="status-pill ${ok ? "ok" : "err"}">${data.status}</span>`;
+        } catch (e) {
+          pill.innerHTML = '<span class="status-pill err">unreachable</span>';
+        }
+      }
+
+      async function doUpload() {
+        const fileInput = $("uploadFile");
+        if (!fileInput.files.length) {
+          setOut("uploadOut", "Select a file first.", true);
+          return;
+        }
+        const fd = new FormData();
+        fd.append("file", fileInput.files[0]);
+        setOut("uploadOut", "Uploading…");
+        try {
+          const res = await fetch(base() + "/upload", {
+            method: "POST",
+            body: fd,
+          });
+          const data = await res.json();
+          setOut("uploadOut", `HTTP ${res.status}\n` + pretty(data), !res.ok);
+          if (data.job_id) $("jobIdInput").value = data.job_id;
+        } catch (e) {
+          setOut("uploadOut", "Request failed: " + e.message, true);
+        }
+      }
+
+      async function checkStatus() {
+        const jobId = $("jobIdInput").value.trim();
+        if (!jobId) {
+          setOut("statusOut", "Enter a job_id.", true);
+          return;
+        }
+        try {
+          const res = await fetch(base() + "/status/" + jobId);
+          const data = await res.json();
+          setOut("statusOut", `HTTP ${res.status}\n` + pretty(data), !res.ok);
+        } catch (e) {
+          setOut("statusOut", "Request failed: " + e.message, true);
+        }
+      }
+
+      async function pollStatus() {
+        const jobId = $("jobIdInput").value.trim();
+        if (!jobId) {
+          setOut("statusOut", "Enter a job_id.", true);
+          return;
+        }
+        setOut("statusOut", "Polling every 2s…");
+        for (let i = 0; i < 60; i++) {
+          try {
+            const res = await fetch(base() + "/status/" + jobId);
+            const data = await res.json();
+            setOut("statusOut", `poll #${i + 1}\n` + pretty(data));
+            if (data.status === "complete" || data.status === "failed") return;
+          } catch (e) {
+            setOut("statusOut", "Request failed: " + e.message, true);
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+
+      async function doQuery() {
+        const question = $("queryInput").value.trim();
+        if (!question) return;
+        setOut("queryOut", "Querying…");
+        try {
+          const res = await fetch(base() + "/query", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question }),
+          });
+          const data = await res.json();
+          setOut("queryOut", `HTTP ${res.status}\n` + pretty(data), !res.ok);
+        } catch (e) {
+          setOut("queryOut", "Request failed: " + e.message, true);
+        }
+      }
+
+      async function doStream() {
+        const question = $("streamInput").value.trim();
+        if (!question) return;
+        const btn = $("streamBtn");
+        const answerEl = $("streamAnswer");
+        const sourcesEl = $("streamSources");
+        answerEl.textContent = "";
+        sourcesEl.textContent = "";
+        btn.disabled = true;
+        btn.textContent = "Streaming…";
+
+        try {
+          const res = await fetch(base() + "/query/stream", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question }),
+          });
+
+          if (!res.ok || !res.body) {
+            const errText = await res.text();
+            answerEl.textContent = `HTTP ${res.status}: ${errText}`;
+            return;
+          }
+
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let fullText = "";
+          let sourcesFound = false;
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            fullText += chunk;
+
+            const delimIdx = fullText.indexOf("__SOURCES__");
+            if (delimIdx !== -1 && !sourcesFound) {
+              sourcesFound = true;
+              answerEl.textContent = fullText.slice(0, delimIdx).trim();
+              try {
+                const sourcesJson = fullText.slice(
+                  delimIdx + "__SOURCES__".length,
+                );
+                const sources = JSON.parse(sourcesJson);
+                sourcesEl.textContent = "Sources:\n" + pretty(sources);
+              } catch (e) {
+                // sources JSON may still be arriving in a later chunk — retry on next tick
+                sourcesFound = false;
+              }
+            } else if (!sourcesFound) {
+              answerEl.textContent = fullText;
+            }
+          }
+        } catch (e) {
+          answerEl.textContent = "Stream failed: " + e.message;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Stream query";
+        }
+      }
+
+      async function listDocs() {
+        setOut("docsOut", "Loading…");
+        try {
+          const res = await fetch(base() + "/documents");
+          const data = await res.json();
+          setOut("docsOut", `HTTP ${res.status}\n` + pretty(data), !res.ok);
+        } catch (e) {
+          setOut("docsOut", "Request failed: " + e.message, true);
+        }
+      }
+
+      async function doDelete() {
+        const id = $("deleteIdInput").value.trim();
+        if (!id) {
+          setOut("deleteOut", "Enter a document_id.", true);
+          return;
+        }
+        setOut("deleteOut", "Deleting…");
+        try {
+          const res = await fetch(
+            base() + "/document/" + encodeURIComponent(id),
+            { method: "DELETE" },
+          );
+          const data = await res.json();
+          setOut("deleteOut", `HTTP ${res.status}\n` + pretty(data), !res.ok);
+        } catch (e) {
+          setOut("deleteOut", "Request failed: " + e.message, true);
+        }
+      }
+
+      async function getCosts() {
+        setOut("costsOut", "Loading…");
+        try {
+          const res = await fetch(base() + "/costs");
+          const data = await res.json();
+          setOut("costsOut", `HTTP ${res.status}\n` + pretty(data), !res.ok);
+        } catch (e) {
+          setOut("costsOut", "Request failed: " + e.message, true);
+        }
+      }
+
+      checkHealth();
+    </script>
+  </body>
+</html>
