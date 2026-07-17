@@ -16,13 +16,18 @@ from config import COLLECTION_NAME
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.documents import Document
 from fastapi.middleware.cors import CORSMiddleware
+
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 
 from config import (
@@ -90,6 +95,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+limiter = Limiter(key_func=get_remote_address)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── LLM + Prompt (module level — loaded once) ─────────────
 llm = ChatOpenAI(
@@ -204,7 +214,8 @@ def build_context_preview(parent_text: str, child_text: str, window: int = 250) 
 
 # POST /upload
 @app.post("/upload", response_model=UploadResponse, status_code=202)
-async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+@limiter.limit("10/minute")
+async def upload_file(request: Request, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """
     Accept a file upload, save to disk, return job_id immediately.
     Processing happens in the background — poll /status/{job_id} for updates.
@@ -248,17 +259,18 @@ async def get_status(job_id: str):
 
 # POST /query
 @app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest):
+@limiter.limit("10/minute")
+async def query(request:Request, payload: QueryRequest):
     """
     Run hybrid retrieval + reranking + LLM answer generation.
     Returns answer with cited sources.
     """
-    if not request.question.strip():
+    if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     # Step 1 — hybrid retrieval (sync — run in thread pool)
     try:
-        chunks = await hybrid_retrieve(request.question)
+        chunks = await hybrid_retrieve(payload.question)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {str(e)}")
 
@@ -277,7 +289,7 @@ async def query(request: QueryRequest):
     # Count context tokens BEFORE calling the LLM
     context_text = "\n\n".join(d.page_content for d in documents)
     context_tokens = count_tokens(context_text)
-    question_tokens = count_tokens(request.question)
+    question_tokens = count_tokens(payload.question)
     prompt_tokens = context_tokens + question_tokens
 
     # Step 3 — LLM answer generation (sync — run in thread pool)
@@ -285,7 +297,7 @@ async def query(request: QueryRequest):
         answer = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: stuff_chain.invoke(
-                {"input": request.question, "context": documents}
+                {"input": payload.question, "context": documents}
             ),
         )
         answer = answer.strip()
@@ -299,7 +311,7 @@ async def query(request: QueryRequest):
     output_cost = (completion_tokens / 1000) * OUTPUT_COST_PER_1K
 
     await log_query_cost(
-        question=request.question,
+        question=payload.question,
         num_chunks=len(chunks),
         context_tokens=context_tokens,
         prompt_tokens=prompt_tokens,
@@ -323,17 +335,18 @@ async def query(request: QueryRequest):
         for c in chunks
     ]
 
-    return QueryResponse(answer=answer, sources=sources, question=request.question)
+    return QueryResponse(answer=answer, sources=sources, question=payload.question)
 
 
 # POST /query/stream
 @app.post("/query/stream")
-async def query_stream(request: QueryRequest):
-    if not request.question.strip():
+@limiter.limit("10/minute")
+async def query_stream(request: Request, payload: QueryRequest):
+    if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     # Retrieval is still synchronous (BM25, cross-encoder, pgvector) — still needs run_in_executor
-    chunks = await hybrid_retrieve(request.question)
+    chunks = await hybrid_retrieve(payload.question)
     if not chunks:
         raise HTTPException(status_code=404, detail="No relevant documents found.")
 
@@ -356,7 +369,7 @@ async def query_stream(request: QueryRequest):
 
     # No response_model here — StreamingResponse and Pydantic validation don't mix
     return StreamingResponse(
-        stream_query_response(request.question, documents, sources),
+        stream_query_response(payload.question, documents, sources),
         media_type="text/event-stream",
     )
 
