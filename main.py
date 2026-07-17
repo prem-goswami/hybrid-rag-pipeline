@@ -19,7 +19,7 @@ if sys.platform == "win32":
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.documents import Document
 from fastapi.middleware.cors import CORSMiddleware
@@ -70,6 +70,7 @@ async def lifespan(app: FastAPI):
     await init_job_table()  # create processing_jobs table if not exists
     await init_parent_docs_table()  # creating parents table if not exsist
     await init_costs_table()  # creating cost table if not exsists
+    await rebuild_bm25_from_db()  # pickle doesn't survive container restarts — rebuild from Postgres
     print("[Startup] Ready.")
     yield
     # SHUTDOWN (nothing to clean up for now)
@@ -77,7 +78,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Week 3 RAG API",
+    title="hybrid-rag-pipeline",
     description="Production RAG backend with hybrid retrieval and reranking",
     version="1.0.0",
     lifespan=lifespan,
@@ -112,7 +113,16 @@ CITATION_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
-stuff_chain = create_stuff_documents_chain(llm=llm, prompt=CITATION_PROMPT)
+# Without this, create_stuff_documents_chain only stuffs page_content into
+# {context} — the LLM never sees filename/page, so it fabricates citations
+# from whatever heading text happens to be in the chunk.
+DOCUMENT_PROMPT = PromptTemplate.from_template(
+    "[Source: {source_filename}, Page: {page}]\n{page_content}"
+)
+
+stuff_chain = create_stuff_documents_chain(
+    llm=llm, prompt=CITATION_PROMPT, document_prompt=DOCUMENT_PROMPT
+)
 
 
 # ── Helpers ───────────────────────────────────────────────
@@ -260,7 +270,8 @@ async def query(request: QueryRequest):
 
     # Step 2 — convert retrieved dicts back to LangChain Document objects for stuff_chain
     documents = [
-        Document(page_content=c["text"], metadata=c["metadata"]) for c in chunks
+        Document(page_content=c["text"], metadata={"page": 0, **c["metadata"]})
+        for c in chunks
     ]
 
     # Count context tokens BEFORE calling the LLM
@@ -327,7 +338,8 @@ async def query_stream(request: QueryRequest):
         raise HTTPException(status_code=404, detail="No relevant documents found.")
 
     documents = [
-        Document(page_content=c["text"], metadata=c["metadata"]) for c in chunks
+        Document(page_content=c["text"], metadata={"page": 0, **c["metadata"]})
+        for c in chunks
     ]
     sources = [
         SourceChunk(

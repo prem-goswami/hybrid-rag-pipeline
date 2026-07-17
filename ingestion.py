@@ -84,6 +84,7 @@ async def load_and_chunk_file_parent_child(file_path: str, source_filename: str)
             for child in children:
                 child.metadata["source_filename"] = source_filename
                 child.metadata["parent_id"] = parent_id
+                child.metadata.setdefault("page", 0)  # docx/txt loaders don't set this
             all_children.extend(children)
         return all_children
 
@@ -120,6 +121,7 @@ def load_and_chunk_file(file_path: str, source_filename: str):
     # add source_filename parameter to metadata of every chunk
     for chunk in chunks:
         chunk.metadata["source_filename"] = source_filename
+        chunk.metadata.setdefault("page", 0)  # docx/txt loaders don't set this
 
     return chunks
 

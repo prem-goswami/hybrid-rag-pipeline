@@ -1,7 +1,11 @@
 .env
 .git
 .venv
+venv
 env
+ENV
 __pycache__/
 *.pyc
+*.pyo
 uploads/
+bm25_index.pkl

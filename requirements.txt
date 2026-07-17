@@ -21,7 +21,9 @@ langchain-text-splitters==1.1.2
 pypdf==6.14.2
 docx2txt==0.9
 
-# Tokenization & Reranking & Sparse Retrieval
+# ML — torch pinned to the CPU build. This pin is what stops pip from
+# pulling the ~2.5GB CUDA wheel as a sentence-transformers dependency.
+torch==2.5.1+cpu
 tiktoken==0.13.0
 sentence-transformers==5.6.0
 rank_bm25==0.2.2
