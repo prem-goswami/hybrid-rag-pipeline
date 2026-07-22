@@ -13,7 +13,7 @@ Built with FastAPI, LangChain, and PostgreSQL/pgvector. Deployed on AWS (ECS Far
 
 Most RAG examples are: embed chunks → cosine search → stuff into an LLM. This one implements the retrieval and production concerns a real system needs:
 
-- **Hybrid retrieval** — dense vector search (pgvector) *and* BM25 keyword search, fused with Reciprocal Rank Fusion, so it handles both semantic paraphrase and exact-term matches (product names, IDs) that pure embeddings miss.
+- **Hybrid retrieval** — dense vector search (pgvector) _and_ BM25 keyword search, fused with Reciprocal Rank Fusion, so it handles both semantic paraphrase and exact-term matches (product names, IDs) that pure embeddings miss.
 - **Cross-encoder reranking** — a two-stage funnel: cheap bi-encoder retrieval narrows to candidates, an expensive cross-encoder accurately ranks the final few.
 - **Parent-child chunking** — retrieves on small precise chunks, generates on their larger parent context, decoupling retrieval accuracy from answer completeness.
 - **Grounded citations** — the source metadata is injected into the LLM's context so citations are derived from real chunk data, not hallucinated, and the API returns a separate machine-verifiable sources array.
@@ -55,18 +55,42 @@ POST /upload → 202 Accepted + job_id   (returns instantly)
   processing_jobs status → complete    (poll via GET /status/{job_id})
 ```
 
+## Performance
+
+Measured locally (single machine, warm cross-encoder), against a 19-page
+PDF ingested into 173 chunks:
+
+| Metric                                    | Value                                |
+| ----------------------------------------- | ------------------------------------ |
+| Ingestion (parse → chunk → embed → store) | ~23s for 19 pages / 173 chunks       |
+| Hybrid retrieval latency (my pipeline)    | ~2.6s median                         |
+| Cost per query                            | ~$0.0002 (≈5,000 queries per dollar) |
+
+**What's measured.** Retrieval latency covers the parts this system owns —
+parallel BM25 + vector search, RRF fusion, parent resolution, and
+cross-encoder reranking — timed independently of the LLM generation call.
+Cost is logged per query from real token counts (embedding + input + output,
+priced per model) and surfaced via the `/costs` endpoint.
+
+**Caveats.** These are local numbers, not production p95s — local eliminates
+the network hop to RDS but runs on laptop hardware. Retrieval latency is
+dominated by CPU cross-encoder reranking (`ms-marco-MiniLM`, no GPU); GPU
+inference or a quantized reranker would cut it substantially. LLM generation
+time is excluded from the retrieval figure because it's variable and
+OpenAI-side, not a property of this pipeline.
+
 ### Components
 
-| File | Responsibility |
-|---|---|
-| `main.py` | FastAPI app, endpoints, lifespan startup, LLM answer chain |
-| `retrieval.py` | Hybrid retrieval — semantic + BM25 + RRF + parent resolution + rerank |
-| `ingestion.py` | Document parsing, parent-child chunking, embedding, BM25 build/rebuild |
-| `database.py` | Postgres/pgvector wiring, table creation, job & cost tracking |
-| `security.py` | Layered prompt-injection defense (regex + LLM classifier) |
-| `models.py` | Pydantic request/response schemas |
-| `config.py` | Configuration and tunable constants |
-| `test_console.html` | Browser-based manual endpoint tester |
+| File                | Responsibility                                                         |
+| ------------------- | ---------------------------------------------------------------------- |
+| `main.py`           | FastAPI app, endpoints, lifespan startup, LLM answer chain             |
+| `retrieval.py`      | Hybrid retrieval — semantic + BM25 + RRF + parent resolution + rerank  |
+| `ingestion.py`      | Document parsing, parent-child chunking, embedding, BM25 build/rebuild |
+| `database.py`       | Postgres/pgvector wiring, table creation, job & cost tracking          |
+| `security.py`       | Layered prompt-injection defense (regex + LLM classifier)              |
+| `models.py`         | Pydantic request/response schemas                                      |
+| `config.py`         | Configuration and tunable constants                                    |
+| `test_console.html` | Browser-based manual endpoint tester                                   |
 
 ---
 
@@ -123,16 +147,16 @@ A typical flow: `POST /upload` a document → poll `GET /status/{job_id}` until 
 
 ## API reference
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/upload` | Upload a PDF/DOCX/TXT. Returns `202` + `job_id`; processing runs in the background. |
-| `GET` | `/status/{job_id}` | Poll ingestion status: `pending` → `processing` → `complete` / `failed`. |
-| `POST` | `/query` | Ask a question. Returns a grounded answer + a sources array. Rate limited, injection-filtered. |
-| `POST` | `/query/stream` | Same as `/query` but streams the answer token-by-token (SSE), with sources appended after a `__SOURCES__` delimiter. |
-| `GET` | `/documents` | List ingested documents and their chunk counts. |
-| `DELETE` | `/document/{document_id}` | Delete a document's chunks (by filename) and rebuild the BM25 index. |
-| `GET` | `/costs` | Per-query token/cost telemetry for recent queries. |
-| `GET` | `/health` | Liveness + database reachability. |
+| Method   | Endpoint                  | Description                                                                                                          |
+| -------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/upload`                 | Upload a PDF/DOCX/TXT. Returns `202` + `job_id`; processing runs in the background.                                  |
+| `GET`    | `/status/{job_id}`        | Poll ingestion status: `pending` → `processing` → `complete` / `failed`.                                             |
+| `POST`   | `/query`                  | Ask a question. Returns a grounded answer + a sources array. Rate limited, injection-filtered.                       |
+| `POST`   | `/query/stream`           | Same as `/query` but streams the answer token-by-token (SSE), with sources appended after a `__SOURCES__` delimiter. |
+| `GET`    | `/documents`              | List ingested documents and their chunk counts.                                                                      |
+| `DELETE` | `/document/{document_id}` | Delete a document's chunks (by filename) and rebuild the BM25 index.                                                 |
+| `GET`    | `/costs`                  | Per-query token/cost telemetry for recent queries.                                                                   |
+| `GET`    | `/health`                 | Liveness + database reachability.                                                                                    |
 
 ### Example query
 
@@ -148,9 +172,9 @@ Returns an `answer` with inline `[Source: filename, Page: N]` citations and a `s
 
 ## Design decisions worth calling out
 
-**Why PostgreSQL/pgvector instead of a dedicated vector database.** The system needs vectors *and* parent chunk text *and* job state *and* cost telemetry. A dedicated vector store handles only the first; the rest need a relational database anyway. pgvector unifies all four in one instance with transactional consistency — one datastore to run instead of two to keep in sync. At this scale the performance tradeoff is irrelevant and the operational simplicity is real.
+**Why PostgreSQL/pgvector instead of a dedicated vector database.** The system needs vectors _and_ parent chunk text _and_ job state _and_ cost telemetry. A dedicated vector store handles only the first; the rest need a relational database anyway. pgvector unifies all four in one instance with transactional consistency — one datastore to run instead of two to keep in sync. At this scale the performance tradeoff is irrelevant and the operational simplicity is real.
 
-**Why hybrid retrieval.** Dense embeddings capture meaning but are weak on rare exact tokens (a specific product name may not surface for a direct question about it); BM25 nails exact matches but is blind to paraphrase. Running both and fusing with RRF gives recall neither achieves alone. RRF fuses on *rank* rather than *score*, which sidesteps the problem that cosine similarity and BM25 scores aren't on comparable scales.
+**Why hybrid retrieval.** Dense embeddings capture meaning but are weak on rare exact tokens (a specific product name may not surface for a direct question about it); BM25 nails exact matches but is blind to paraphrase. Running both and fusing with RRF gives recall neither achieves alone. RRF fuses on _rank_ rather than _score_, which sidesteps the problem that cosine similarity and BM25 scores aren't on comparable scales.
 
 **Why a cross-encoder only at the end.** A cross-encoder scores query-document pairs with full cross-attention — far more accurate than embedding similarity, but it can't be precomputed, so scoring the whole corpus is infeasible. Hence the funnel: cheap retrieval for 50 candidates, RRF to 10, expensive reranking only on those 10.
 
@@ -180,7 +204,7 @@ Because the always-on AWS cost isn't justified for a portfolio project between d
 
 ## Roadmap / known limitations
 
-Being explicit about what's *not* done, since knowing the gaps matters as much as the features:
+Being explicit about what's _not_ done, since knowing the gaps matters as much as the features:
 
 - **BM25 index and rate-limit counters are per-container** (in-memory / local pickle). This is why the deployment runs a single task; scaling horizontally needs BM25 moved to Postgres full-text search and rate-limit state moved to Redis/ElastiCache.
 - **Rate-limit key is the direct client IP** — behind a load balancer this may key on the LB's IP; production would read the real client IP from `X-Forwarded-For`.
