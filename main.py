@@ -216,7 +216,7 @@ def build_context_preview(parent_text: str, child_text: str, window: int = 250) 
 
 # POST /upload
 @app.post("/upload", response_model=UploadResponse, status_code=202)
-@limiter.limit("10/minute")
+@limiter.limit("2/minute")
 async def upload_file(request: Request, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """
     Accept a file upload, save to disk, return job_id immediately.
@@ -490,6 +490,12 @@ async def delete_document(document_id: str):
                 DELETE FROM {COLLECTION_NAME}
                 WHERE langchain_metadata->>'source_filename' = %s
                 """,
+                (document_id,),
+            )
+            
+            # Delete parent documents associated with this filename
+            await conn.execute(
+                "DELETE FROM parent_documents WHERE source_filename = %s",
                 (document_id,),
             )
 

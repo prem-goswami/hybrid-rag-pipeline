@@ -177,7 +177,7 @@ async def resolve_parents(child_candidates: list[dict]) -> list[dict]:
 
     async with get_db_conn() as conn:
         rows = await conn.execute(
-            "SELECT parent_id, parent_text FROM parent_documents WHERE parent_id = ANY(%s)",
+            "SELECT parent_id::text, parent_text FROM parent_documents WHERE parent_id::text = ANY(%s)",
             (parent_ids,),
         )
         records = await rows.fetchall()
