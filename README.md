@@ -163,7 +163,7 @@ Returns an `answer` with inline `[Source: filename, Page: N]` citations and a `s
 ## Production hardening
 
 - **Rate limiting** (`slowapi`) — per-IP limits on the expensive endpoints (`/query`, `/query/stream`, `/upload`), returning `429` when exceeded, so no single caller can drain the OpenAI budget on an unauthenticated API.
-- **Prompt-injection defense** (`security.py`) — layered input validation on `/query`: a deterministic regex pre-filter catches known injection phrasings for free (whitespace-evasion-resistant), and an LLM classifier catches rephrased/semantic attempts the regex misses. Fails closed, with a distinct response for a genuine block versus a classifier outage, and a uniform user-facing message that doesn't leak which layer fired.
+- **Prompt-injection defense** (`security.py`) — layered input validation on both query endpoints (`/query` and `/query/stream`): a deterministic regex pre-filter catches known injection phrasings for free (whitespace-evasion-resistant), and an LLM classifier catches rephrased/semantic attempts the regex misses. Fails closed, with a distinct response for a genuine block versus a classifier outage, and a uniform user-facing message that doesn't leak which layer fired.
 - **Async ingestion** — uploads return immediately with a job ID; heavy parsing/embedding runs in the background with status tracked in Postgres.
 - **Cost telemetry** — every query logs token counts and USD cost by model to a `query_costs` table, surfaced via `/costs`.
 - **Streaming** — `/query/stream` streams tokens as they're generated for a responsive UX.
@@ -182,7 +182,6 @@ Because the always-on AWS cost isn't justified for a portfolio project between d
 
 Being explicit about what's *not* done, since knowing the gaps matters as much as the features:
 
-- **Injection defense covers `/query` but not `/query/stream`** — the classifier guard should be applied to the streaming endpoint too.
 - **BM25 index and rate-limit counters are per-container** (in-memory / local pickle). This is why the deployment runs a single task; scaling horizontally needs BM25 moved to Postgres full-text search and rate-limit state moved to Redis/ElastiCache.
 - **Rate-limit key is the direct client IP** — behind a load balancer this may key on the LB's IP; production would read the real client IP from `X-Forwarded-For`.
 - **Secrets partially wired** — the OpenAI key is injected from Secrets Manager, but the database credentials are still passed as plain environment variables (they're embedded in connection strings); these should be composed from individually-injected secret values.
