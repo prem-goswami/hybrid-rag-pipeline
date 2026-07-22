@@ -372,6 +372,30 @@ async def query(request:Request, payload: QueryRequest):
 async def query_stream(request: Request, payload: QueryRequest):
     if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
+    
+    # ── Security: prompt-injection defense ──
+    # Layer 1 — deterministic regex pre-filter (free, instant)
+    if regex_prefilter(payload.question):
+        raise HTTPException(
+            status_code=400,
+            detail="Query blocked: potential prompt injection detected.",
+        )
+
+    # Layer 2 — LLM classifier (fail-closed on error, but distinguish block from outage)
+    try:
+        if await asyncio.get_event_loop().run_in_executor(
+            None, llm_classifier, payload.question
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Query blocked: potential prompt injection detected.",
+            )
+    except HTTPException:
+        raise  # re-raise the intentional 400 — don't let the block below swallow it
+    except Exception:
+        raise HTTPException(
+            status_code=503, detail="Safety check unavailable, please resubmit."
+        )
 
     # Retrieval is still synchronous (BM25, cross-encoder, pgvector) — still needs run_in_executor
     chunks = await hybrid_retrieve(payload.question)
